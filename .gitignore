@@ -72,6 +72,7 @@ Thumbs.db
 # 项目特定
 report/output/*.md
 !report/output/.gitkeep
+schema_cache.json  # 动态 Schema 缓存文件
 
 # 数据库备份
 *.sql

@@ -1,6 +1,7 @@
 """
 NL2SQL Tool - 智能自然语言转 SQL 查询
 使用 LLM 动态生成 SQL，支持任意自然语言问题
+✨ v2.1: 支持动态读取数据库 Schema，无需手动维护
 """
 from crewai.tools import tool
 import re
@@ -18,110 +19,50 @@ from openai import OpenAI
 # 初始化 OpenAI 客户端
 client = OpenAI()
 
+# 导入动态 Schema 读取器
+try:
+    from tools.schema_reader import get_cached_schema, get_cached_smart_schema
+    USE_DYNAMIC_SCHEMA = True
+except ImportError:
+    USE_DYNAMIC_SCHEMA = False
+    print("[警告] 无法导入 schema_reader，将使用静态 Schema")
 
-# Chinook 数据库详细表结构（用于 LLM 理解）
-CHINOOK_SCHEMA = """
-Chinook 数据库完整表结构：
 
-1. Album (专辑表)
-   - AlbumId (INTEGER, PRIMARY KEY): 专辑ID
-   - Title (VARCHAR): 专辑标题
-   - ArtistId (INTEGER, FOREIGN KEY): 艺人ID
-
-2. Artist (艺人表)
-   - ArtistId (INTEGER, PRIMARY KEY): 艺人ID
-   - Name (VARCHAR): 艺人名称
-
-3. Customer (客户表)
-   - CustomerId (INTEGER, PRIMARY KEY): 客户ID
-   - FirstName (VARCHAR): 名
-   - LastName (VARCHAR): 姓
-   - Company (VARCHAR): 公司
-   - Address (VARCHAR): 地址
-   - City (VARCHAR): 城市
-   - State (VARCHAR): 州/省
-   - Country (VARCHAR): 国家
-   - PostalCode (VARCHAR): 邮编
-   - Phone (VARCHAR): 电话
-   - Fax (VARCHAR): 传真
-   - Email (VARCHAR): 邮箱
-   - SupportRepId (INTEGER): 支持代表ID
-
-4. Employee (员工表)
-   - EmployeeId (INTEGER, PRIMARY KEY): 员工ID
-   - LastName (VARCHAR): 姓
-   - FirstName (VARCHAR): 名
-   - Title (VARCHAR): 职位
-   - ReportsTo (INTEGER): 上级ID
-   - BirthDate (DATETIME): 生日
-   - HireDate (DATETIME): 入职日期
-   - Address (VARCHAR): 地址
-   - City (VARCHAR): 城市
-   - State (VARCHAR): 州/省
-   - Country (VARCHAR): 国家
-   - PostalCode (VARCHAR): 邮编
-   - Phone (VARCHAR): 电话
-   - Fax (VARCHAR): 传真
-   - Email (VARCHAR): 邮箱
-
-5. Genre (流派表)
-   - GenreId (INTEGER, PRIMARY KEY): 流派ID
-   - Name (VARCHAR): 流派名称
-
-6. Invoice (发票表)
-   - InvoiceId (INTEGER, PRIMARY KEY): 发票ID
-   - CustomerId (INTEGER, FOREIGN KEY): 客户ID
-   - InvoiceDate (DATETIME): 发票日期
-   - BillingAddress (VARCHAR): 账单地址
-   - BillingCity (VARCHAR): 账单城市
-   - BillingState (VARCHAR): 账单州/省
-   - BillingCountry (VARCHAR): 账单国家
-   - BillingPostalCode (VARCHAR): 账单邮编
-   - Total (DECIMAL): 总金额
-
-7. InvoiceLine (发票明细表)
-   - InvoiceLineId (INTEGER, PRIMARY KEY): 明细ID
-   - InvoiceId (INTEGER, FOREIGN KEY): 发票ID
-   - TrackId (INTEGER, FOREIGN KEY): 音轨ID
-   - UnitPrice (DECIMAL): 单价
-   - Quantity (INTEGER): 数量
-
-8. Track (音轨表)
-   - TrackId (INTEGER, PRIMARY KEY): 音轨ID
-   - Name (VARCHAR): 音轨名称
-   - AlbumId (INTEGER, FOREIGN KEY): 专辑ID
-   - MediaTypeId (INTEGER): 媒体类型ID
-   - GenreId (INTEGER, FOREIGN KEY): 流派ID
-   - Composer (VARCHAR): 作曲家
-   - Milliseconds (INTEGER): 时长（毫秒）
-   - Bytes (INTEGER): 文件大小
-   - UnitPrice (DECIMAL): 单价
-
-9. MediaType (媒体类型表)
-   - MediaTypeId (INTEGER, PRIMARY KEY): 媒体类型ID
-   - Name (VARCHAR): 类型名称
-
-10. Playlist (播放列表表)
-    - PlaylistId (INTEGER, PRIMARY KEY): 播放列表ID
-    - Name (VARCHAR): 列表名称
-
-11. PlaylistTrack (播放列表-音轨关联表)
-    - PlaylistId (INTEGER, FOREIGN KEY): 播放列表ID
-    - TrackId (INTEGER, FOREIGN KEY): 音轨ID
+# 静态 Schema（仅作为后备，优先使用动态读取）
+FALLBACK_SCHEMA = """
+无法动态读取数据库结构。
+请检查数据库连接或使用 get_schema_info() 工具查看表结构。
 """
 
 
-def generate_sql_with_llm(question: str, schema: str = CHINOOK_SCHEMA) -> str:
+def generate_sql_with_llm(question: str, schema: str = None, use_dynamic: bool = True) -> str:
     """
     使用 LLM 将自然语言问题转换为 SQL 查询
     
     参数:
         question: 用户的自然语言问题
-        schema: 数据库表结构描述
+        schema: 数据库表结构描述（可选，如果不提供则自动读取）
+        use_dynamic: 是否使用动态 Schema（默认 True）
     
     返回:
         SQL 查询语句
     """
+    # 决定使用哪个 schema
+    if schema is None:
+        if use_dynamic and USE_DYNAMIC_SCHEMA:
+            # 使用动态读取的 schema（推荐）
+            try:
+                schema = get_cached_schema()
+                print("[NL2SQL] ✅ 使用动态读取的数据库 Schema")
+            except Exception as e:
+                print(f"[NL2SQL] ❌ 动态读取失败: {e}")
+                schema = FALLBACK_SCHEMA
+                print("[NL2SQL] 使用后备 Schema（请检查数据库连接）")
+        else:
+            # 动态读取功能未启用
+            schema = FALLBACK_SCHEMA
+            print("[NL2SQL] ⚠️ 动态 Schema 功能未启用，请安装 schema_reader")
+    
     system_prompt = f"""你是一个 SQL 专家。根据用户的自然语言问题和数据库表结构，生成准确的 MySQL SELECT 查询。
 
 数据库表结构：
@@ -217,15 +158,49 @@ def nl2sql(question: str) -> str:
 
 
 @tool("get_schema_info")
-def get_schema_info() -> str:
+def get_schema_info(dynamic: bool = True) -> str:
     """
-    获取 Chinook 数据库的完整表结构信息
+    获取数据库的完整表结构信息
+    
+    参数:
+        dynamic: 是否动态读取（True=从数据库读取，False=使用静态配置）
     
     返回:
         数据库架构描述（包含所有表和字段）
     """
-    return CHINOOK_SCHEMA
+    if dynamic and USE_DYNAMIC_SCHEMA:
+        try:
+            return get_cached_schema()
+        except Exception as e:
+            print(f"[警告] 动态读取失败: {e}")
+            return FALLBACK_SCHEMA
+    else:
+        return FALLBACK_SCHEMA
+
+
+@tool("refresh_schema")
+def refresh_schema() -> str:
+    """
+    刷新数据库 Schema 缓存（当数据库结构变化时使用）
+    
+    返回:
+        操作结果信息
+    """
+    if not USE_DYNAMIC_SCHEMA:
+        return "动态 Schema 功能未启用"
+    
+    try:
+        from tools.schema_reader import get_cached_schema
+        schema = get_cached_schema(force_refresh=True)
+        return f"✅ Schema 已刷新\n\n{schema}"
+    except Exception as e:
+        return f"❌ 刷新失败: {str(e)}"
 
 
 # 导出的工具
-__all__ = ['nl2sql', 'get_schema_info', 'generate_sql_with_llm', 'CHINOOK_SCHEMA']
+__all__ = [
+    'nl2sql', 
+    'get_schema_info', 
+    'refresh_schema',
+    'generate_sql_with_llm'
+]

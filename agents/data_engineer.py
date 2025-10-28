@@ -1,9 +1,10 @@
 """
 Data Engineer Agent - 数据工程师
 负责从多种数据源（SQL 数据库、CSV 文件）中提取数据
+✨ v2.1: 支持动态读取数据库 Schema，适应任何数据库
 """
 from crewai import Agent
-from tools.nl2sql import nl2sql, get_schema_info
+from tools.nl2sql import nl2sql, get_schema_info, refresh_schema
 from tools.sql_tool import sql_query_md, get_database_schema
 from tools.csv_tool import csv_query, get_csv_schema, csv_filter
 
@@ -40,8 +41,8 @@ def create_data_engineer() -> Agent:
         - 不确定时，先用 get_csv_schema() 和 get_database_schema() 查看可用数据
         """,
         tools=[
-            # SQL 工具
-            nl2sql, sql_query_md, get_schema_info, get_database_schema,
+            # SQL 工具（✨ 支持动态 Schema）
+            nl2sql, sql_query_md, get_schema_info, get_database_schema, refresh_schema,
             # CSV 工具
             csv_query, get_csv_schema, csv_filter
         ],
