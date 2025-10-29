@@ -73,6 +73,8 @@ Thumbs.db
 report/output/*.md
 !report/output/.gitkeep
 schema_cache.json  # 动态 Schema 缓存文件
+api/exports/*      # API 导出文件
+!api/exports/.gitkeep
 
 # 数据库备份
 *.sql
